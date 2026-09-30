@@ -164,3 +164,69 @@ The hardware-independent capture/tempo core lives in src/midi_capture.c.
 5. recover updater/bootloader wire protocol and restore path
 6. trace FPGA traffic
 7. map bidirectional fader/LED state updates
+
+
+## Raw 49-key keybed path
+
+The physical keyboard path is now mapped much more strongly.
+
+Polling/scanner function around 0x0800E9FC:
+
+- reads the raw keybed event bytes
+- bit 7 distinguishes the two key transitions
+- 0x08008810 maps the raw scan code to a 0..48 physical-key index
+- 0x08006168 converts the raw strike measurement to velocity 1..127
+
+The scanner then calls:
+
+- 0x0800E9C8 for the transition that carries velocity (KEY DOWN / Note On path)
+- 0x0800E9AC for the transition without velocity (KEY UP / Note Off path)
+
+Both explicitly reject key indices >= 49.
+
+Those functions enqueue event types 2 and 3 through 0x0801B224 / 0x08015484. The wrapper packs the physical key index and velocity into the queue payload.
+
+The central dispatcher at 0x0800D90C consumes them:
+
+- type 2 -> 0x08006A90(key_index, velocity)
+- type 3 -> 0x08006AD0(key_index)
+
+Each of those has exactly one caller: the central dispatcher.
+
+### Best capture hook sites
+
+The cleanest current candidates are the two stock send calls inside those physical-key handlers:
+
+- 0x08006AB4: BL 0x08011FAC  (physical KEY DOWN / Note On processing)
+- 0x08006B0C: BL 0x08011F24  (physical KEY UP / Note Off processing)
+
+Hooking those individual BL instructions is preferable to hooking the global MIDI transmitter because it captures only human keybed performance, not notes generated later by arp/sequencer/pads.
+
+### Stock per-key sent-note table
+
+The stock firmware already maintains a 128 x 2-byte note-state table at:
+
+    0x20000FC0
+
+Relevant helpers:
+
+- 0x0801CC78 writes the second byte for a key
+- 0x08019270 reads the second byte for a key
+- the Note On path stores the mapped/sent MIDI note there
+- the Note Off path reads it back so release uses the same pitch even if octave/transpose state changed while the key was held
+
+The Note On path computes the current mapped note through 0x080087D8 before sending.
+
+This gives Capture an excellent semantic point:
+
+1. call the original stock physical-key Note On routine
+2. read the actual mapped/sent note from the stock key-state table
+3. append Note On + velocity + custom 15 kHz timestamp to capture history
+
+For Note Off:
+
+1. read the mapped/sent note from the stock key-state table
+2. append Note Off + timestamp
+3. call the original stock Note Off routine
+
+This preserves what the player actually heard while excluding generated arp/sequence notes.
