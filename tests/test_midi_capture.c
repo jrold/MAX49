@@ -1,12 +1,17 @@
 #include <assert.h>
-#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "../src/midi_capture.h"
 
-static void add(mc_event_t *e, size_t *n, int t, int note, int vel)
+static uint32_t ms_to_ticks(int ms)
 {
-    e[*n] = (mc_event_t){(uint32_t)t, 0x90, (uint8_t)note, (uint8_t)vel, 0};
+    return (uint32_t)ms * (MC_TICK_HZ / 1000u);
+}
+
+static void add(mc_event_t *e, size_t *n, int ms, int note, int vel)
+{
+    e[*n] = (mc_event_t){ms_to_ticks(ms), 0x90, (uint8_t)note, (uint8_t)vel, 0};
     (*n)++;
 }
 
@@ -24,35 +29,51 @@ int main(void)
 
     mc_tempo_result_t r;
     assert(mc_estimate_tempo(ev, n, 70, 180, &r));
-    printf("tempo %.2f score %.6f onsets %u\n", r.bpm, r.score, r.onset_count);
-    assert(fabsf(r.bpm - 120.0f) < 1.0f);
-    assert(mc_choose_bar_count(7980, r.bpm, 16) == 4);
+    printf("tempo %u.%02u score %u onsets %u\n",
+           mc_bpm_x100(r.bpm_q4) / 100, mc_bpm_x100(r.bpm_q4) % 100,
+           r.score, r.onset_count);
+    assert(r.bpm_q4 == 480);
+    assert(mc_choose_bar_count(ms_to_ticks(7980), r.bpm_q4, 16) == 4);
 
     mc_event_t storage[8], out[8];
     mc_ring_t ring;
     mc_ring_init(&ring, storage, 8);
     for (int i = 0; i < 12; i++)
-        mc_ring_push(&ring, 1000u * i, 0x90, 60, 100, 0);
+        mc_ring_push(&ring, ms_to_ticks(1000 * i), 0x90, 60, 100, 0);
 
-    size_t got = mc_ring_copy_recent(&ring, out, 8, 11000, 4000);
+    size_t got = mc_ring_copy_recent(&ring, out, 8, ms_to_ticks(11000), ms_to_ticks(4000));
     assert(got == 5);
-    assert(out[0].time_ms == 7000 && out[4].time_ms == 11000);
+    assert(out[0].time_ticks == ms_to_ticks(7000));
+    assert(out[4].time_ticks == ms_to_ticks(11000));
 
     n = 0;
-    const float q = 60000.0f / 103.75f;
-    const float units2[] = {
-        0, .5f, 1, 1.5f, 2.5f, 3, 4, 4.5f, 5.5f, 6,
-        7, 8, 8.5f, 9, 10, 11, 12, 13.5f, 14, 15
+    const double q = 60000.0 / 103.75;
+    const double units[] = {
+        0, .5, 1, 1.5, 2.5, 3, 4, 4.5, 5.5, 6,
+        7, 8, 8.5, 9, 10, 11, 12, 13.5, 14, 15
     };
-    for (size_t i = 0; i < sizeof(units2) / sizeof(units2[0]); i++) {
+    for (size_t i = 0; i < sizeof(units) / sizeof(units[0]); i++) {
         int jitter = (int)(i % 5) - 2;
-        add(ev, &n, (int)(units2[i] * q + jitter * 4), 64 + (int)(i % 5), 95);
+        add(ev, &n, (int)(units[i] * q + jitter * 4), 64 + (int)(i % 5), 95);
     }
 
     assert(mc_estimate_tempo(ev, n, 70, 180, &r));
-    printf("tempo2 %.2f score %.6f onsets %u\n", r.bpm, r.score, r.onset_count);
-    assert(fabsf(r.bpm - 103.75f) < 1.0f);
+    printf("tempo2 %u.%02u score %u onsets %u\n",
+           mc_bpm_x100(r.bpm_q4) / 100, mc_bpm_x100(r.bpm_q4) % 100,
+           r.score, r.onset_count);
+    assert(r.bpm_q4 == 415);
 
-    puts("midi_capture: ok");
+    mc_event_t src = {0x00ABCDEFu, 0x92, 64, 111, 3}, dst = {0};
+    uint8_t packed[MC_PACKED_EVENT_SIZE];
+    assert(mc_pack_event7(packed, &src));
+    mc_unpack_event7(&dst, packed);
+    assert(dst.time_ticks == src.time_ticks);
+    assert(dst.status == src.status && dst.data1 == src.data1);
+    assert(dst.data2 == src.data2 && dst.flags == src.flags);
+
+    mc_event_t too_late = {0x01000000u, 0x90, 60, 100, 0};
+    assert(!mc_pack_event7(packed, &too_late));
+
+    puts("midi_capture fixed-point: ok");
     return 0;
 }
