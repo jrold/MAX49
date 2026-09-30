@@ -44,13 +44,16 @@ size_t mc_ring_copy_recent(const mc_ring_t *ring, mc_event_t *out, size_t out_ca
     return n > out_capacity ? out_capacity : n;
 }
 
-bool mc_estimate_tempo(const mc_event_t *events, size_t count, uint16_t min_bpm, uint16_t max_bpm, mc_tempo_result_t *result)
+bool mc_estimate_tempo(const mc_event_t *events, size_t count,
+                       uint16_t min_bpm, uint16_t max_bpm,
+                       uint32_t *onsets, size_t onset_capacity,
+                       mc_tempo_result_t *result)
 {
-    if (!events || !result || min_bpm < 30u || max_bpm <= min_bpm) return false;
+    if (!events || !onsets || !result || onset_capacity < 4u || min_bpm < 30u || max_bpm <= min_bpm)
+        return false;
 
-    uint32_t onsets[192];
     size_t n = 0;
-    for (size_t i = 0; i < count && n < (sizeof onsets / sizeof onsets[0]); ++i) {
+    for (size_t i = 0; i < count && n < onset_capacity; ++i) {
         if (is_note_on(&events[i])) onsets[n++] = events[i].time_ticks;
     }
     if (n < 4) return false;
@@ -59,8 +62,6 @@ bool mc_estimate_tempo(const mc_event_t *events, size_t count, uint16_t min_bpm,
     uint16_t best_bpm_q4 = 0;
 
     for (uint16_t bpm_q4 = (uint16_t)(min_bpm * 4u); bpm_q4 <= (uint16_t)(max_bpm * 4u); ++bpm_q4) {
-        /* A sixteenth note is 15/BPM seconds. With BPM represented as BPM*4:
-         * step_ticks = tick_hz * 60 / bpm_q4. */
         uint32_t step_ticks = (MC_TICK_HZ * 60u + bpm_q4 / 2u) / bpm_q4;
         uint32_t total = 0;
         uint16_t pairs = 0;
@@ -77,10 +78,6 @@ bool mc_estimate_tempo(const mc_event_t *events, size_t count, uint16_t min_bpm,
                 uint32_t target = nearest * step_ticks;
                 uint32_t err = dt > target ? dt - target : target - dt;
                 uint32_t normalized = (err * 1024u + step_ticks / 2u) / step_ticks;
-
-                /* Squared normalized grid error plus a small complexity penalty.
-                 * The penalty breaks many half/double-tempo ties in favor of a
-                 * rhythm explained by fewer sixteenth-note units. */
                 total += normalized * normalized + nearest * 12u;
                 pairs++;
             }
@@ -105,30 +102,21 @@ uint8_t mc_choose_bar_count(uint32_t phrase_ticks, uint16_t bpm_q4, uint8_t max_
 {
     static const uint8_t choices[] = {1, 2, 4, 8, 16};
     if (bpm_q4 == 0 || max_bars == 0) return 0;
-
-    /* 4/4 bar = four quarter notes = 240/BPM seconds. */
     uint32_t bar_ticks = (MC_TICK_HZ * 960u + bpm_q4 / 2u) / bpm_q4;
     uint8_t best = 1;
     uint32_t best_error = 0xFFFFFFFFu;
-
     for (size_t i = 0; i < sizeof choices; ++i) {
         uint8_t bars = choices[i];
         if (bars > max_bars) break;
         uint32_t target = bar_ticks * bars;
         uint32_t error = phrase_ticks > target ? phrase_ticks - target : target - phrase_ticks;
         uint32_t relative = target ? (error * 4096u) / target : 0xFFFFFFFFu;
-        if (relative < best_error) {
-            best_error = relative;
-            best = bars;
-        }
+        if (relative < best_error) { best_error = relative; best = bars; }
     }
     return best;
 }
 
-uint16_t mc_bpm_x100(uint16_t bpm_q4)
-{
-    return (uint16_t)(bpm_q4 * 25u);
-}
+uint16_t mc_bpm_x100(uint16_t bpm_q4) { return (uint16_t)(bpm_q4 * 25u); }
 
 bool mc_pack_event7(uint8_t out[MC_PACKED_EVENT_SIZE], const mc_event_t *event)
 {
@@ -136,10 +124,7 @@ bool mc_pack_event7(uint8_t out[MC_PACKED_EVENT_SIZE], const mc_event_t *event)
     out[0] = (uint8_t)(event->time_ticks);
     out[1] = (uint8_t)(event->time_ticks >> 8);
     out[2] = (uint8_t)(event->time_ticks >> 16);
-    out[3] = event->status;
-    out[4] = event->data1;
-    out[5] = event->data2;
-    out[6] = event->flags;
+    out[3] = event->status; out[4] = event->data1; out[5] = event->data2; out[6] = event->flags;
     return true;
 }
 
@@ -147,8 +132,5 @@ void mc_unpack_event7(mc_event_t *event, const uint8_t in[MC_PACKED_EVENT_SIZE])
 {
     if (!event || !in) return;
     event->time_ticks = (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16);
-    event->status = in[3];
-    event->data1 = in[4];
-    event->data2 = in[5];
-    event->flags = in[6];
+    event->status = in[3]; event->data1 = in[4]; event->data2 = in[5]; event->flags = in[6];
 }
