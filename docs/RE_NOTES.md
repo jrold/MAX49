@@ -230,3 +230,10 @@ For Note Off:
 3. call the original stock Note Off routine
 
 This preserves what the player actually heard while excluding generated arp/sequence notes.
+
+
+## 2026-09-30: RAM / clip-capture pass
+
+Startup analysis now gives an exact linker/runtime RAM initialization boundary. The image copies 0xEA4 bytes from flash 0x08026CEC to SRAM 0x20000000 and zeroes 0x3BCC bytes beginning at 0x20000EA4. The initialized/zeroed span therefore ends at 0x20004A70 (19,056 bytes total). Startup also loads MSP=0x20004A70. This is the first hard RAM-footprint number from the binary. It does not yet prove the RAM above 0x20004A70 is unused at runtime; exact MCU SRAM capacity and heap/alternate-stack behavior still need verification.
+
+A realtime MIDI clip/Capture design is documented in docs/CLIP_CAPTURE.md. The initial proof should be RAM-only and capture Note On/Off before attempting saved clips.
