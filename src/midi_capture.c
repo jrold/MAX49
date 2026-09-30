@@ -44,19 +44,12 @@ size_t mc_ring_copy_recent(const mc_ring_t *ring, mc_event_t *out, size_t out_ca
     return n > out_capacity ? out_capacity : n;
 }
 
-bool mc_estimate_tempo(const mc_event_t *events, size_t count,
-                       uint16_t min_bpm, uint16_t max_bpm,
-                       uint32_t *onsets, size_t onset_capacity,
-                       mc_tempo_result_t *result)
+bool mc_estimate_tempo_onsets(const uint32_t *onsets, size_t n,
+                              uint16_t min_bpm, uint16_t max_bpm,
+                              mc_tempo_result_t *result)
 {
-    if (!events || !onsets || !result || onset_capacity < 4u || min_bpm < 30u || max_bpm <= min_bpm)
+    if (!onsets || !result || n < 4u || min_bpm < 30u || max_bpm <= min_bpm)
         return false;
-
-    size_t n = 0;
-    for (size_t i = 0; i < count && n < onset_capacity; ++i) {
-        if (is_note_on(&events[i])) onsets[n++] = events[i].time_ticks;
-    }
-    if (n < 4) return false;
 
     uint32_t best_score = 0xFFFFFFFFu;
     uint16_t best_bpm_q4 = 0;
@@ -96,6 +89,21 @@ bool mc_estimate_tempo(const mc_event_t *events, size_t count,
     result->score = best_score;
     result->onset_count = (uint16_t)n;
     return true;
+}
+
+bool mc_estimate_tempo(const mc_event_t *events, size_t count,
+                       uint16_t min_bpm, uint16_t max_bpm,
+                       uint32_t *onsets, size_t onset_capacity,
+                       mc_tempo_result_t *result)
+{
+    if (!events || !onsets || !result || onset_capacity < 4u)
+        return false;
+
+    size_t n = 0;
+    for (size_t i = 0; i < count && n < onset_capacity; ++i) {
+        if (is_note_on(&events[i])) onsets[n++] = events[i].time_ticks;
+    }
+    return mc_estimate_tempo_onsets(onsets, n, min_bpm, max_bpm, result);
 }
 
 uint8_t mc_choose_bar_count(uint32_t phrase_ticks, uint16_t bpm_q4, uint8_t max_bars)
