@@ -10,8 +10,9 @@
 ## Flash map
 
 - vector table: 0x08004000
-- initial SP: 0x20000400
+- vector-table SP word: 0x20000400
 - reset vector: 0x080041AB
+- reset code explicitly sets MSP to 0x20004A70 before entering the application
 - main programmed region: 0x08004000-0x0802700B
 - metadata: 0x08027800-0x0802780F and 0x08027FFC-0x08027FFF
 - inferred resident bootloader: 0x08000000-0x08003FFF
@@ -22,10 +23,47 @@
 
 ARM Thumb/Thumb-2 firmware directly uses the STM32F1 peripheral map. The interrupt layout matches STM32F103 high-density parts.
 
-Strong conclusion: STM32F103 high-density Cortex-M3, likely 256 KB xC-class. Exact package suffix still needs the physical chip marking or schematic.
+Strong conclusion: STM32F103 high-density Cortex-M3, likely a 256 KB xC-class device. Exact package suffix still needs the physical chip marking or schematic.
+
+## SRAM / startup map
+
+The startup table exposes the stock application's static RAM footprint:
+
+- .data: copy 0x0EA4 bytes to 0x20000000
+- .bss/ZI: zero 0x3BCC bytes beginning at 0x20000EA4
+- resulting static-RAM end: 0x20004A70
+- reset code sets MSP to 0x20004A70
+
+A PC-relative literal-reference scan of the application found genuine stock global-RAM references only up to approximately 0x20004650. No genuine stock literal references were found in 0x20005000-0x2000BFFF.
+
+If the physical MCU is the expected 48 KB-SRAM STM32F103 xC-class part, 0x20005000-0x2000BFFF is a very attractive 28 KB candidate region for custom capture/clip state.
+
+Do not treat that upper region as proven-safe on hardware yet. Confirm the exact MCU marking and/or perform a non-destructive runtime RAM test first.
+
+## SysTick / timebase
+
+SysTick handler: 0x08013AEC.
+
+The handler calls 0x0801AD30, which increments a 16-bit counter at:
+
+- 0x20000C12
+
+Accessor:
+
+- 0x08013F94 returns the current 16-bit tick count
+
+Initializer around 0x08013FA0 programs:
+
+- SysTick LOAD = 0x12BF (4799)
+- SysTick CTRL = 7 after enable (processor clock, interrupt enabled, counter enabled)
+
+At a 72 MHz Cortex-M3 clock this is a 15 kHz tick, about 66.67 microseconds per tick. The stock 16-bit counter therefore wraps every ~4.37 seconds.
+
+For long capture timestamps, custom firmware should extend this to a 32-bit timebase rather than relying directly on the stock 16-bit value.
 
 ## Useful interrupt handlers
 
+- SysTick: 0x08013AEC
 - USB HP / CAN TX: 0x0801430D
 - USB LP / CAN RX0: 0x080143BD
 - SPI1: 0x08011A89
@@ -44,16 +82,34 @@ The receive dispatcher around 0x0800DD20 reads a 14-bit payload length from byte
 
 ## Standard MIDI output helpers
 
-Likely functions in the 0x080100A0-0x080101DC region:
+The short helpers at 0x080100A0-0x080101DC are now mapped with high confidence:
 
-- Channel Pressure
-- Control Change
-- Note Off
-- Note On
-- Pitch Bend
-- Program Change
+- 0x080100A0: Channel Pressure
+- 0x080100D4: Control Change
+- 0x08010118: Note Off
+- 0x08010148: Note On
+- 0x08010178: Pitch Bend
+- 0x080101AC: Polyphonic Aftertouch
+- 0x080101DC: Program Change
 
-Routing wrappers near 0x080140DC / 0x0801411C feed the existing USB/DIN routing logic.
+They feed the existing low-level MIDI output/routing path around 0x08012110.
+
+Useful routing wrappers:
+
+- 0x080141AA: Note Off routing wrapper
+- 0x080141F2: Note On routing wrapper
+
+A second generic local/output Note-On route exists at 0x0800FDB4. It accepts note and velocity, then sends through DIN and/or USB according to the MAX49 routing state. It has many callers from different panel/performance subsystems, so it is a promising capture hook but is not yet proven to represent only raw keybed input. Capturing here would likely capture post-processing/generated notes as well unless custom playback is explicitly suppressed.
+
+## Firmware checksum / integrity
+
+0x080080CC computes a simple bytewise XOR over:
+
+- 0x08004000 through 0x08027FFF
+
+The only currently identified consumer is around 0x0801C9C8, where the value is masked to 7 bits and included in an Akai SysEx response.
+
+This does not look like a cryptographic signature or secure-boot check. It currently appears to be an informational/application checksum. Modified firmware will change the reported value; bootloader behavior still needs to be verified before assuming there is no separate update-time validation.
 
 ## Touch faders
 
@@ -86,11 +142,25 @@ The image contains STM32vv.vv FPGAvv.vv and a metadata string AD37_Richard at 0x
 
 Alpha Juno live parameter SysEx is only 10 bytes. The MAX49 already has the fader event pipeline, MIDI routing and arbitrary SysEx output. Direct editing and category-aware randomization are therefore small firmware additions.
 
+## Realtime clip/capture feasibility
+
+The current strongest architecture is:
+
+1. hook a suitable local/post-performance Note-On/Note-Off path
+2. timestamp events with an extended form of the existing 15 kHz timebase
+3. store them in a circular buffer in candidate upper SRAM
+4. on Capture, analyze recent Note-On timing and infer tempo/phrase length
+5. copy the chosen recent history into a clip
+6. play clips through the existing MIDI routing helpers with a capture-suppress flag to avoid feedback
+
+The hardware-independent capture/tempo core lives in src/midi_capture.c.
+
 ## Next RE targets
 
-1. map a safe button/menu trigger path
-2. verify SysEx sender ABI and DIN path
-3. reproduce firmware integrity/checksum behavior
-4. recover updater/bootloader wire protocol
-5. trace FPGA traffic
-6. map bidirectional fader/LED state updates
+1. identify whether 0x0800FDB4 is an acceptable musical-event capture point or locate the raw keybed/pad event source upstream
+2. map a low-risk physical Capture button/pad hook
+3. map the four-line LCD framebuffer/render path for a native clip page
+4. verify upper SRAM on real hardware
+5. recover updater/bootloader wire protocol and restore path
+6. trace FPGA traffic
+7. map bidirectional fader/LED state updates
