@@ -36,6 +36,9 @@ void mc_ring_init(mc_ring_t *ring, mc_event_t *storage, uint16_t capacity);
 void mc_ring_push(mc_ring_t *ring, uint32_t time_ticks, uint8_t status, uint8_t data1, uint8_t data2, uint8_t flags);
 size_t mc_ring_copy_recent(const mc_ring_t *ring, mc_event_t *out, size_t out_capacity, uint32_t now_ticks, uint32_t window_ticks);
 
+bool mc_estimate_tempo_onsets(const uint32_t *onsets, size_t onset_count,
+                              uint16_t min_bpm, uint16_t max_bpm,
+                              mc_tempo_result_t *result);
 bool mc_estimate_tempo(const mc_event_t *events, size_t count,
                        uint16_t min_bpm, uint16_t max_bpm,
                        uint32_t *onset_scratch, size_t onset_capacity,
