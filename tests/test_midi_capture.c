@@ -10,6 +10,7 @@ int main(void){
  for(size_t i=0;i<sizeof(base)/sizeof(base[0]);i++) add(ev,&n,base[i]+((int)(i%3)-1)*5,60+(int)(i%7),100);
  mc_tempo_result_t r; assert(mc_estimate_tempo(ev,n,70,180,scratch,MC_DEFAULT_ONSET_CAPACITY,&r));
  printf("tempo %u.%02u score %u onsets %u\n",mc_bpm_x100(r.bpm_q4)/100,mc_bpm_x100(r.bpm_q4)%100,r.score,r.onset_count); assert(r.bpm_q4==480);
+ assert(mc_estimate_tempo_onsets(scratch,r.onset_count,70,180,&r)); assert(r.bpm_q4==480);
  assert(mc_choose_bar_count(ms_to_ticks(7980),r.bpm_q4,16)==4);
  mc_event_t storage[8],out[8]; mc_ring_t ring; mc_ring_init(&ring,storage,8); for(int i=0;i<12;i++) mc_ring_push(&ring,ms_to_ticks(1000*i),0x90,60,100,0);
  size_t got=mc_ring_copy_recent(&ring,out,8,ms_to_ticks(11000),ms_to_ticks(4000)); assert(got==5); assert(out[0].time_ticks==ms_to_ticks(7000)); assert(out[4].time_ticks==ms_to_ticks(11000));
@@ -17,5 +18,5 @@ int main(void){
  for(size_t i=0;i<sizeof(units)/sizeof(units[0]);i++){int jitter=(int)(i%5)-2; add(ev,&n,(int)(units[i]*q+jitter*4),64+(int)(i%5),95);} assert(mc_estimate_tempo(ev,n,70,180,scratch,MC_DEFAULT_ONSET_CAPACITY,&r)); assert(r.bpm_q4==415);
  assert(!mc_estimate_tempo(ev,n,70,180,scratch,3,&r));
  mc_event_t src={0x00ABCDEFu,0x92,64,111,3},dst={0}; uint8_t packed[MC_PACKED_EVENT_SIZE]; assert(mc_pack_event7(packed,&src)); mc_unpack_event7(&dst,packed); assert(dst.time_ticks==src.time_ticks && dst.status==src.status && dst.data1==src.data1 && dst.data2==src.data2 && dst.flags==src.flags);
- puts("midi_capture scratch-buffer: ok"); return 0;
+ puts("midi_capture onset API: ok"); return 0;
 }
