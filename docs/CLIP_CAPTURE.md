@@ -20,20 +20,43 @@ After playing something useful:
 When transport is already running, Capture is simpler: the firmware already
 knows tempo and musical phase, so it can grab exactly the previous N bars.
 
-## First capture core
+## Native MAX49 timebase
+
+The v1.12 application already configures SysTick with LOAD=0x12BF and increments
+a 16-bit counter at 0x20000C12 from the SysTick ISR.
+
+With the expected 72 MHz core clock and processor-clock SysTick source this is:
+
+    15,000 ticks/second
+    66.67 microseconds/tick
+
+The stock counter wraps after about 4.37 seconds, so the custom firmware needs
+to extend it to 32 bits for capture. The capture engine uses these native 15 kHz
+units directly; no floating point or millisecond quantization is required.
+
+## Capture core
 
 src/midi_capture.c currently provides:
 
 - circular timestamped MIDI-event history
 - copy-last-window operation
 - free-play tempo estimation from Note-On inter-onset intervals
-- simple 1/2/4/8/16-bar phrase-length selection
+- 1/2/4/8/16-bar phrase-length selection
+- 24-bit/7-byte compact MIDI event packing
 
-Host tests currently recover humanized phrases at 120.0 BPM and 103.75 BPM.
+The tempo estimator is integer/fixed-point and scans quarter-BPM candidates.
+Host tests currently recover humanized phrases at exactly:
 
-The tempo estimator scores candidate tempos against integer multiples of a
+    120.00 BPM
+    103.75 BPM
+
+The estimator scores candidate tempos against integer multiples of a
 sixteenth-note grid using timestamp differences. Because it uses differences,
 it does not need to know where beat 1 occurred before estimating tempo.
+
+A Cortex-M3 -Oz build of the capture core is currently about 835 bytes of text
+before MAX49-specific glue, so the algorithm is small enough to fit comfortably
+inside the known application code caves.
 
 This is only the first estimator. Later work should improve:
 
@@ -43,6 +66,24 @@ This is only the first estimator. Later work should improve:
 - pickup notes
 - confidence scoring
 - preserving unquantized performance timing while fitting a loop envelope
+
+## Compact events
+
+The compact representation is:
+
+    bytes 0..2   absolute 24-bit capture tick
+    byte  3      MIDI status
+    byte  4      data 1
+    byte  5      data 2
+    byte  6      flags
+
+At 15 kHz, a 24-bit timestamp spans about 18.6 minutes. That is far beyond a
+1/2/4/8/16-bar capture window even at very slow tempos.
+
+A raw 0x7000-byte upper-RAM arena divided into seven-byte events is exactly
+4096 event slots. Real firmware will reserve part of that arena for clip
+metadata, indices, state, and the extended clock, so usable capacity will be
+somewhat lower.
 
 ## RAM budget
 
@@ -54,7 +95,7 @@ Reverse engineering of the stock v1.12 startup code shows:
     .bss/ZI initialization:
       0x20000EA4 + 0x3BCC bytes
 
-    initial application MSP:
+    reset sets MSP:
       0x20004A70
 
 Actual PC-relative global RAM references found in the application top out near
@@ -70,16 +111,36 @@ This is not yet declared safe for patched firmware. Before using it on hardware
 we should verify the exact MCU marking and/or perform a non-destructive runtime
 RAM test.
 
-mc_event_t is 8 bytes on the intended ABI, so example budgets are:
+## MIDI hook direction
 
-    2048 rolling events = 16 KB
-    1536 stored events  = 12 KB
-                         -------
-                          28 KB
+0x0800FDB4 is a generic MAX49 note-output route. It receives note/velocity and
+routes through DIN and/or USB according to the current device routing state.
 
-That is enough for a useful always-listening capture window and several
-ordinary MIDI clips. Denser clip storage can later use delta timestamps or a
-packed event representation.
+It has many callers from different performance/control subsystems, so it is a
+useful possible first capture hook but it is not yet proven to mean only raw
+keybed input. Hooking there would likely make Capture capable of remembering
+post-processing/generated material too. Custom clip playback would use a
+capture-suppress flag so playback cannot feed itself back into the history.
+
+The cleaner long-term option is to locate the raw keybed/pad event source
+upstream and choose explicitly whether Capture records raw playing or
+post-arp/post-sequencer output.
+
+## Transport
+
+Existing firmware already has explicit MIDI transport paths:
+
+    0x0801021C  MIDI Start (FA)
+    0x08010226  MIDI Stop  (FC)
+    0x08010230  MIDI Clock (F8)
+
+and higher-level routing/state functions around:
+
+    0x0801221C  start path
+    0x08012258  stop path
+
+This gives the clip system existing transport infrastructure to reuse rather
+than replacing the MAX49 MIDI stack.
 
 ## UI direction
 
@@ -94,13 +155,27 @@ A clip workflow fits the MAX49 panel better than deep step editing:
 
 Example display:
 
-    CLIP 03
+    CLIP 03   PLAY
     08 BAR   119.8
+    LEN 00:16.03
+    CAPTURE READY
 
 or after free-play capture:
 
-    CAPTURED
+    CLIP 03   LOOP
     04 BAR   103.8
+    UNQUANTIZED
+    CAPTURED
 
-The old blue LCD is an advantage here: the workflow only needs terse state,
-tempo and clip information, not a piano roll.
+The old blue four-line LCD is an advantage here: the workflow only needs terse
+state, tempo and clip information, not a piano roll.
+
+## Next integration work
+
+1. extend the stock 16-bit SysTick count to a custom 32-bit capture clock
+2. identify the preferred musical input hook (raw keybed vs post-processing)
+3. identify a low-risk Capture button/gesture
+4. map a native LCD render/page hook
+5. verify upper SRAM on physical hardware
+6. implement clip playback scheduling through the stock Note On/Off routes
+7. implement overdub and one-level undo
